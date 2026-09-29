@@ -185,9 +185,18 @@ _F_ARKIT_P3D = np.diag([-1.0, 1.0, -1.0, 1.0])
 def load_extrinsics_from_hdf5(hdf5_path, frame_indices):
     with h5py.File(hdf5_path, 'r') as f:
         camera_transforms = f['transforms/camera'][:]
+    if camera_transforms.ndim != 3 or camera_transforms.shape[1:] != (4, 4):
+        raise ValueError("transforms/camera must have shape [N,4,4]")
     extrinsics = {}
     for idx in frame_indices:
+        if idx < 0 or idx >= len(camera_transforms):
+            raise ValueError(f"Camera trajectory has no entry for original frame {idx}")
         T_c2w_arkit = camera_transforms[idx].astype(np.float64)
+        if (not np.isfinite(T_c2w_arkit).all()
+                or not np.allclose(T_c2w_arkit[3], [0, 0, 0, 1])
+                or not np.allclose(T_c2w_arkit[:3, :3].T @ T_c2w_arkit[:3, :3], np.eye(3), atol=1e-5)
+                or not np.isclose(np.linalg.det(T_c2w_arkit[:3, :3]), 1, atol=1e-5)):
+            raise ValueError(f"Invalid camera-to-world rigid transform at frame {idx}; select only covered frames")
         T_c2w_p3d = T_c2w_arkit @ _F_ARKIT_P3D
         extrinsics[idx] = T_c2w_p3d
     return extrinsics
@@ -214,10 +223,13 @@ def transform_pose_between_cameras(pose_dict, T_c2w_src, T_c2w_dst):
     quat_np = pose_dict["rotation"].detach().cpu().squeeze().numpy().astype(np.float64)
     trans_np = pose_dict["translation"].detach().cpu().squeeze().numpy().astype(np.float64)
 
-    T_obj_in_src = _make_T(trans_np, _quat_to_matrix_np(quat_np))
+    # compose_transform applies quaternion_to_matrix to ROW vectors. Camera
+    # extrinsics below act on COLUMN vectors, so transpose at this boundary.
+    T_obj_in_src = _make_T(trans_np, _quat_to_matrix_np(quat_np).T)
     T_obj_in_dst = np.linalg.inv(T_c2w_dst) @ T_c2w_src @ T_obj_in_src
 
-    new_trans, new_quat = _T_to_pos_quat_wxyz(T_obj_in_dst)
+    new_trans = T_obj_in_dst[:3, 3].copy()
+    new_quat = ScipyRotation.from_matrix(T_obj_in_dst[:3, :3].T).as_quat(scalar_first=True)
 
     return {
         "rotation": torch.tensor(new_quat, dtype=torch.float32).unsqueeze(0),

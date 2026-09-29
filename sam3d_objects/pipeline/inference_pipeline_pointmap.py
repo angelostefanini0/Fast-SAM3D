@@ -304,15 +304,18 @@ class InferencePipelinePointMap(InferencePipeline):
                 points_tensor.permute(1, 2, 0), device=self.device
             )
             point_map_tensor["intrinsics"] = intrinsics_result["intrinsics"]
+        else:
+            point_map_tensor["intrinsics"] = intrinsics
 
         return point_map_tensor
 
     @torch.autograd.grad_mode.inference_mode(mode=False)
     def run_post_optimization(self, mesh_glb, intrinsics, pose_dict, layout_input_dict, fill_mask_holes=False, force_alignment=False, fixed_scale=None, Enable_visible_ICP=False, Enable_shape_ICP=True):
+        # These intrinsics are normalized separately by width and height.
+        # Square pixels therefore do NOT imply fx_norm == fy_norm. Preserve
+        # the calibrated camera, including rectangular images and off-center
+        # principal points, throughout silhouette optimization.
         intrinsics = intrinsics.clone()
-        fx, fy = intrinsics[0, 0], intrinsics[1, 1]
-        re_focal = min(fx, fy)
-        intrinsics[0, 0], intrinsics[1, 1] = re_focal, re_focal
 
         # Convert pose_dict values to tensors if they are lists
         rotation = pose_dict["rotation"]
@@ -796,4 +799,3 @@ class InferencePipelinePointMap(InferencePipeline):
             "scale": torch.tensor([[1.0, 1.0, 1.0]]),
             "rotation": torch.tensor([[1.0, 0.0, 0.0, 0.0]]),
         }
-
